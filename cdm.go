@@ -1,30 +1,52 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+	"net/http"
+	"strconv"
+	"sync"
+)
 
-const DEF_GOROUTINES = 4
-
-type Config struct {
-	downloadURL 	string
-	goRoutines 		int
-}
-
-func CDM(
-	downloadURL 	string,
-	goRoutines		int,
-) (*Config, error) {
+// Function that checks if the request has Accept-Range header and returns content length
+func (CDM *CDMConfig) acceptsMultiple() (bool, int, error) {
 	
-	if len(downloadURL) == 0 {
-		err := fmt.Errorf("please enter a download URL")
-		return nil, err
+	URL := CDM.downloadURL.String()
+
+	resp, err := http.Head(URL)
+	if err != nil {
+		return false, 0, err
 	}
 
-	if goRoutines == 0 {
-		goRoutines = DEF_GOROUTINES
+	if resp.StatusCode != http.StatusOK {
+		return false, 0, fmt.Errorf("request unsuccessful")
 	}
 
-	return &Config{
-		downloadURL,
-		goRoutines,
-	}, nil
+	cl := resp.Header.Get("Content-Length")
+	contentLength, err := strconv.Atoi(cl) 
+	if err != nil {
+		return false, 0, err
+	}
+
+	if resp.Header.Get("Accept-Ranges") != "bytes" {
+		return false, contentLength, nil
+	}
+
+	return true, contentLength, nil
+} 
+
+func (CDM *CDMConfig) downloadConcurrent(contentSize int) {
+	
+	chunkSize := contentSize / CDM.goRoutines
+	start := 0
+	var wg &sync.WaitGroup
+
+	for i:=0; i<contentSize; i++ {
+		// defining the range for current download
+		tempLength := i + chunkSize
+		// checking if the last chunk size exceeds total content size
+		tempLength = math.MinInt64(tempLength, contentSize)
+
+
+	}
 }
