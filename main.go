@@ -4,10 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/url"
+	"time"
 )
 
 func main() {
+
+	start := time.Now()
 
 	goRoutines := flag.Int("t", 1, "number of goroutines")
 
@@ -18,17 +20,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	downloadURL, err := url.ParseRequestURI(flag.Args()[0])
-	if err != nil {
-		log.Fatal(err)
-	}
+	downloadURL := flag.Args()[0]
 
 	CDM, err := NewCDM(downloadURL, *goRoutines)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	ok, contentLength, err := CDM.acceptsMultiple()
+	ok, contentSize, err := CDM.acceptsMultiple()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -36,8 +35,8 @@ func main() {
 	if !ok {
 		fmt.Println("does not accept concurrent downloads, downloading using 1 goroutine")
 	} else {
-		// CDM.downloadConcurrent()
-		fmt.Printf("accepts multiple, content length: %d", contentLength)
+		CDM.downloadConcurrent(contentSize)
+		fmt.Printf("accepts multiple, content length: %d", contentSize)
 
 	}
 	
@@ -45,4 +44,5 @@ func main() {
 		log.Fatal(err)
 	}
 
+	log.Printf("main, execution time %s\n", time.Since(start))
 }

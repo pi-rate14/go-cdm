@@ -1,18 +1,18 @@
 package main
 
-import (
-	"net/url"
-)
+import "sync"
 
 const DEF_GOROUTINES = 1
 
 type CDMConfig struct {
-	downloadURL 	*url.URL
+	downloadURL 	string
 	goRoutines 		int
+	contentMap		map[int][]byte
+	*sync.Mutex
 }
 
 func NewCDM(
-	downloadURL 	*url.URL,
+	downloadURL 	string,
 	goRoutines		int,
 ) (*CDMConfig, error) {
 
@@ -21,8 +21,12 @@ func NewCDM(
 		goRoutines = DEF_GOROUTINES
 	}
 
+	contentMap := make(map[int][]byte)
+
 	return &CDMConfig{
 		downloadURL,
 		goRoutines,
+		contentMap,
+		&sync.Mutex{},
 	}, nil
 }
