@@ -75,7 +75,7 @@ func showProgress(routine int, prog progressBar) {
 	// write to bar until we reach counted chracters
 	for i := 0; i < PROGRESS_SIZE; i++ {
 		if i <= reached {
-			bar.WriteString(">")
+			bar.WriteString("=")
 		} else {
 			bar.WriteString(" ")
 		}
@@ -83,5 +83,5 @@ func showProgress(routine int, prog progressBar) {
 
 	bar.WriteString("]")
 	bar.WriteString(fmt.Sprintf(" %v%%", percent))
-	fmt.Printf("Connection %d  :  %s\n", routine+1, bar.String())
+	fmt.Printf("Goroutine %d  :  %s\n", routine+1, bar.String())
 }
