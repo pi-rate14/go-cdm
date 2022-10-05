@@ -32,6 +32,9 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// handle user signals
+	go CDM.handleSignal()
+
 	// check if download URL provides range downloads
 	ok, contentSize, err := CDM.acceptsMultiple()
 	if err != nil {

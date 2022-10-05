@@ -10,8 +10,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 )
 
 // Function that checks if the request has Accept-Range header and returns content length
@@ -145,16 +147,23 @@ func (CDM *CDMConfig) downloadPart(
 	var totalRead int
 
 	for {
-		err = CDM.readResponseBody(res, readBuffer, tempFile, &totalRead, routine)
+		select {
+		case sigErr := <-CDM.termErr:
+			CDM.appErr = sigErr
+			return
+		default:
+			err = CDM.readResponseBody(res, readBuffer, tempFile, &totalRead, routine)
 
-		// if we reach the end of the temporary file, return from this goroutine
-		if err == io.EOF {
-			return
+			// if we reach the end of the temporary file, return from this goroutine
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				CDM.appErr = err
+				return
+			}
 		}
-		if err != nil {
-			CDM.appErr = err
-			return
-		}
+
 	}
 }
 
@@ -207,4 +216,15 @@ func (CDM *CDMConfig) joinChunks() error {
 	log.Printf("Download complete. Output size: %d\n", bytesWritten)
 
 	return nil
+}
+
+func (CDM *CDMConfig) handleSignal() {
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
+	go func() {
+		sig := <-signalChan
+		for routine := 0; routine < len(CDM.contentMap); routine++ {
+			CDM.termErr <- fmt.Errorf("user stopped : %v", sig)
+		}
+	}()
 }
