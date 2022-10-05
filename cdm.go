@@ -1,3 +1,7 @@
+/*
+	All the controllers for CDM
+*/
+
 package main
 
 import (
@@ -37,15 +41,22 @@ func (CDM *CDMConfig) acceptsMultiple() (bool, int, error) {
 	return true, contentLength, nil
 }
 
+// function to download a file that does not accept range header and uses 1 goroutine
+func (CDM *CDMConfig) downloadSingle(contentSize int) error {
+	CDM.contentMap[0] = CDM.outputFile
+	CDM.downloadPart(nil, 0, 0, 0, CDM.outputFile)
+	return CDM.appErr
+}
+
+// function to distribute chunks between goroutines
 func (CDM *CDMConfig) downloadConcurrent(contentSize int) error {
 
+	// close output file after all chunks are combined
 	defer CDM.outputFile.Close()
 
 	partSize := contentSize / CDM.goRoutines
 	routine := 0
-	var wg sync.WaitGroup
-
-	errs := make(chan error)
+	wg := &sync.WaitGroup{}
 
 	for seek := 0; seek < contentSize; seek += partSize + 1 {
 
@@ -68,42 +79,55 @@ func (CDM *CDMConfig) downloadConcurrent(contentSize int) error {
 		// map content range to goroutine
 		CDM.contentMap[routine] = tempFile
 
+		// update progress
+		CDM.progress[routine] = NewProgressBar(0, tempLength-seek)
+
 		// increment waitgroup before invoking goroutine
 		wg.Add(1)
 
 		// download chunk data
-		go CDM.downloadPart(&wg, routine, seek, tempLength, tempFile, errs)
+		go CDM.downloadPart(wg, routine, seek, tempLength, tempFile)
 
 		// move onto the next goroutine
 		routine++
 	}
 
+	// initialise the progress
+	termSig := make(chan struct{})
+	go CDM.initProgress(termSig)
+
 	// wait for all goroutines to finish
 	wg.Wait()
+	termSig <- struct{}{}
+
 	// check for errors
+	if CDM.appErr != nil {
+		os.Remove(CDM.outputFile.Name())
+		return CDM.appErr
+	}
+
+	// join all the chunks
 	return CDM.joinChunks()
 }
 
+// function to download chunk data for a goroutine
 func (CDM *CDMConfig) downloadPart(
 	wg *sync.WaitGroup,
 	routine int,
 	seek int,
 	tempLength int,
 	tempFile *os.File,
-	errschan chan error,
-
 ) {
 	// decrement waitGroup once this download is complete
 	defer wg.Done()
-
-	fmt.Printf("Downloading on goroutine #%d\n", routine)
-
+	// TODO : strings.NewReader
 	req, err := http.NewRequest(http.MethodGet, CDM.downloadURL, nil)
 	if err != nil {
-		log.Fatal(err)
-		errschan <- err
+		CDM.appErr = err
+		return
 	}
 
+	// if a range is specified, modify the header
 	if seek+tempLength != 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", seek, tempLength))
 	}
@@ -111,25 +135,56 @@ func (CDM *CDMConfig) downloadPart(
 	// make a request
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Fatal(err)
-		errschan <- err
+		CDM.appErr = err
+		return
 	}
 	defer res.Body.Close()
 
-	_, err = io.Copy(tempFile, res.Body)
-	if err != nil {
-		log.Fatal(err)
-		errschan <- err
+	// create a read buffer to write response body to progress bar
+	readBuffer := make([]byte, READ_BUFFER_SIZE)
+	var totalRead int
+
+	for {
+		err = CDM.readResponseBody(res, readBuffer, tempFile, &totalRead, routine)
+
+		// if we reach the end of the temporary file, return from this goroutine
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			CDM.appErr = err
+			return
+		}
 	}
-
-	// CDM.mutex
-	// CDM.contentMap[routine] = append(CDM.contentMap[routine], data...)
-	// CDM.Unlock()
-
 }
 
+// funtion to read response body and update progress bar
+func (CDM *CDMConfig) readResponseBody(res *http.Response, readBuffer []byte, tempFile io.Writer, totalRead *int, routine int) error {
+
+	// read from response body and write to temporary file
+	readBytes, err := res.Body.Read(readBuffer)
+	if readBytes > 0 {
+		tempFile.Write(readBuffer[:readBytes])
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// update the total bytes read and the progress bar
+	*totalRead += readBytes
+
+	CDM.mutex.Lock()
+	CDM.progress[routine].current = *totalRead
+	CDM.mutex.Unlock()
+
+	return nil
+}
+
+// function to join the temp files after they are downloaded
 func (CDM *CDMConfig) joinChunks() error {
 
+	// for each goroutine, copy the file data in output file, in order
 	for routine := 0; routine < len(CDM.contentMap); routine++ {
 
 		tempFile := CDM.contentMap[routine]
@@ -140,6 +195,16 @@ func (CDM *CDMConfig) joinChunks() error {
 		}
 
 	}
+
+	// find the size of the output file
+	oFile, err := CDM.outputFile.Stat()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	bytesWritten := oFile.Size()
+
+	log.Printf("Download complete. Output size: %d\n", bytesWritten)
 
 	return nil
 }
