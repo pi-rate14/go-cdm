@@ -1,20 +1,18 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"sync"
 )
 
 // Function that checks if the request has Accept-Range header and returns content length
 func (CDM *CDMConfig) acceptsMultiple() (bool, int, error) {
-	
+
 	URL := CDM.downloadURL
 
 	resp, err := http.Head(URL)
@@ -27,7 +25,7 @@ func (CDM *CDMConfig) acceptsMultiple() (bool, int, error) {
 	}
 
 	cl := resp.Header.Get("Content-Length")
-	contentLength, err := strconv.Atoi(cl) 
+	contentLength, err := strconv.Atoi(cl)
 	if err != nil {
 		return false, 0, err
 	}
@@ -37,17 +35,19 @@ func (CDM *CDMConfig) acceptsMultiple() (bool, int, error) {
 	}
 
 	return true, contentLength, nil
-} 
+}
 
 func (CDM *CDMConfig) downloadConcurrent(contentSize int) error {
-	
+
+	defer CDM.outputFile.Close()
+
 	partSize := contentSize / CDM.goRoutines
 	routine := 0
 	var wg sync.WaitGroup
 
 	errs := make(chan error)
-	
-	for seek:=0; seek<contentSize; seek += partSize + 1 {
+
+	for seek := 0; seek < contentSize; seek += partSize + 1 {
 
 		// defining the range for current download
 		tempLength := seek + partSize
@@ -57,37 +57,46 @@ func (CDM *CDMConfig) downloadConcurrent(contentSize int) error {
 			tempLength = contentSize
 		}
 
+		// create temp file to write chunk data
+		tempFile, err := os.CreateTemp("", TEMP_FILE_NAME)
+		if err != nil {
+			return err
+		}
+		defer tempFile.Close()
+		defer os.Remove(tempFile.Name())
+
 		// map content range to goroutine
-		CDM.contentMap[routine] =  make([]byte, 0)
+		CDM.contentMap[routine] = tempFile
 
 		// increment waitgroup before invoking goroutine
 		wg.Add(1)
 
 		// download chunk data
-		go CDM.downloadPart(&wg, routine, seek, tempLength, errs)
+		go CDM.downloadPart(&wg, routine, seek, tempLength, tempFile, errs)
 
 		// move onto the next goroutine
 		routine++
 	}
 
 	// wait for all goroutines to finish
-	wg.Wait()	
+	wg.Wait()
 	// check for errors
 	return CDM.joinChunks()
 }
 
 func (CDM *CDMConfig) downloadPart(
-	wg 				*sync.WaitGroup,
-	routine 		int,
-	seek			int,
-	tempLength		int,
-	errschan		chan error,
+	wg *sync.WaitGroup,
+	routine int,
+	seek int,
+	tempLength int,
+	tempFile *os.File,
+	errschan chan error,
 
 ) {
 	// decrement waitGroup once this download is complete
 	defer wg.Done()
 
-	fmt.Printf("Downloading on goroutine #%d", routine)
+	fmt.Printf("Downloading on goroutine #%d\n", routine)
 
 	req, err := http.NewRequest(http.MethodGet, CDM.downloadURL, nil)
 	if err != nil {
@@ -95,7 +104,7 @@ func (CDM *CDMConfig) downloadPart(
 		errschan <- err
 	}
 
-	if(seek+tempLength != 0) {
+	if seek+tempLength != 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", seek, tempLength))
 	}
 
@@ -107,43 +116,29 @@ func (CDM *CDMConfig) downloadPart(
 	}
 	defer res.Body.Close()
 
-	data, err := ioutil.ReadAll(res.Body)
+	_, err = io.Copy(tempFile, res.Body)
 	if err != nil {
 		log.Fatal(err)
 		errschan <- err
 	}
 
-	CDM.Lock()
-	CDM.contentMap[routine] = append(CDM.contentMap[routine], data...)
-	CDM.Unlock()
-	
+	// CDM.mutex
+	// CDM.contentMap[routine] = append(CDM.contentMap[routine], data...)
+	// CDM.Unlock()
+
 }
 
 func (CDM *CDMConfig) joinChunks() error {
 
-	// get the current working directory	
-	currentDirectory, err := os.Getwd()
-	if err != nil {
-		return err
-	}
+	for routine := 0; routine < len(CDM.contentMap); routine++ {
 
-	oFileName := fmt.Sprintf("%s/%s", currentDirectory, filepath.Base(CDM.downloadURL))
+		tempFile := CDM.contentMap[routine]
+		tempFile.Seek(0, 0)
+		_, err := io.Copy(CDM.outputFile, tempFile)
+		if err != nil {
+			return err
+		}
 
-	output, err := os.Create(oFileName)
-	if err != nil {
-		return err
-	}
-	defer output.Close()
-
-	buffer := bytes.NewBuffer(nil)
-	for i := 0; i < len(CDM.contentMap); i++ {
-
-		buffer.Write(CDM.contentMap[i])
-	
-	} 
-	_, err = buffer.WriteTo(output)
-	if err != nil {
-		return err	
 	}
 
 	return nil
